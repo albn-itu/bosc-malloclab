@@ -32,7 +32,6 @@ team_t team = {
     /* Second member's email address (leave blank if none) */
     ""};
 
-/* $begin mallocmacros */
 /* Basic constants and macros */
 #define WSIZE 4             /* Word and header/footer size (bytes) */
 #define DSIZE 8             /* Double word size (bytes) */
@@ -41,6 +40,11 @@ team_t team = {
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
 /* Pack a size and allocated bit into a word */
+// Ex.
+// PACK(DSIZE, 1)
+// DSIZE: 1000
+// 1:     0001
+// res:   1001
 #define PACK(size, alloc) ((size) | (alloc))
 
 /* Read and write a word at address p */
@@ -48,8 +52,9 @@ team_t team = {
 #define PUT(p, val) (*(unsigned int *)(p) = (val))
 
 /* Read the size and allocated fields from address p */
-#define GET_SIZE(p) (GET(p) & ~0x7)
-#define GET_ALLOC(p) (GET(p) & 0x1)
+/* Must be called on the header or footer of the block */
+#define GET_SIZE(p) (GET(p) & ~0x7) // TODO: Must be 8 or above, why?
+#define GET_ALLOC(p) (GET(p) & 0x1) // Least significant bit of the contents at p represents if the block is free
 
 /* Given block ptr bp, compute address of its header and footer */
 #define HDRP(bp) ((char *)(bp)-WSIZE)
@@ -58,7 +63,6 @@ team_t team = {
 /* Given block ptr bp, compute address of next and previous blocks */
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp)-WSIZE)))
 #define PREV_BLKP(bp) ((char *)(bp)-GET_SIZE(((char *)(bp)-DSIZE)))
-/* $end mallocmacros */
 
 /* Global variables */
 static char *heap_listp = 0; /* Pointer to first block */
@@ -75,7 +79,6 @@ static void checkblock(void *bp);
 /*
  * mm_init - Initialize the memory manager
  */
-/* $begin mminit */
 int mm_init(void) {
   /* Create the initial empty heap */
   if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
@@ -84,32 +87,26 @@ int mm_init(void) {
   PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1)); /* Prologue header */
   PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1)); /* Prologue footer */
   PUT(heap_listp + (3 * WSIZE), PACK(0, 1));     /* Epilogue header */
-  heap_listp += (2 * WSIZE);
-  /* $end mminit */
-
-  /* $begin mminit */
+  heap_listp += (2 * WSIZE); // Placed on prologue footer
 
   /* Extend the empty heap with a free block of CHUNKSIZE bytes */
   if (extend_heap(CHUNKSIZE / WSIZE) == NULL)
     return -1;
   return 0;
 }
-/* $end mminit */
 
 /*
  * mm_malloc - Allocate a block with at least size bytes of payload
  */
-/* $begin mmmalloc */
 void *mm_malloc(size_t size) {
   size_t asize;      /* Adjusted block size */
   size_t extendsize; /* Amount to extend heap if no fit */
   char *bp;
 
-  /* $end mmmalloc */
   if (heap_listp == 0) {
     mm_init();
   }
-  /* $begin mmmalloc */
+
   /* Ignore spurious requests */
   if (size == 0)
     return NULL;
@@ -119,6 +116,12 @@ void *mm_malloc(size_t size) {
     asize = 2 * DSIZE;
   else
     asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
+    // mm_malloc 10
+    // 8 * ((10 + 8 + (8 - 1)) / 8)
+    // 8 * ((10 + 8 + 7) / 8)
+    // 8 * (25 / 8)
+    // 8 * 4
+    // 32
 
   /* Search the free list for a fit */
   if ((bp = find_fit(asize)) != NULL) {
@@ -133,68 +136,87 @@ void *mm_malloc(size_t size) {
   place(bp, asize);
   return bp;
 }
-/* $end mmmalloc */
 
 /*
  * mm_free - Free a block
  */
-/* $begin mmfree */
 void mm_free(void *bp) {
-  /* $end mmfree */
+  // Cannot free the prologue block / alignment block which 0 points to
   if (bp == 0)
     return;
 
-  /* $begin mmfree */
+  // Get the size of the current block
+  // TODO: Will this throw segmentation fault?
   size_t size = GET_SIZE(HDRP(bp));
-  /* $end mmfree */
+
+  // If the heap hasn't been initialized do so and return
+  // NOTE: There are no guarantees the block actually exists within the heap
   if (heap_listp == 0) {
     mm_init();
+    return;
   }
-  /* $begin mmfree */
 
+  // TODO: If the size line does not throw segmentation fault, then this might write outside of our heap
+
+  // Unallocate the block
   PUT(HDRP(bp), PACK(size, 0));
   PUT(FTRP(bp), PACK(size, 0));
+  // Merge with sorrounding blocks
   coalesce(bp);
 }
 
-/* $end mmfree */
 /*
  * coalesce - Boundary tag coalescing. Return ptr to coalesced block
  */
-/* $begin mmfree */
 static void *coalesce(void *bp) {
+  // Is the previous block allocated
   size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+  // Is the next block allocated?
   size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+  // Get the size of the current block
   size_t size = GET_SIZE(HDRP(bp));
 
+  // Sandwiched between 2 allocated blocks
   if (prev_alloc && next_alloc) { /* Case 1 */
+    // No change, so return our current
     return bp;
   }
-
+  
+  // Previous is allocated, but the next is free
   else if (prev_alloc && !next_alloc) { /* Case 2 */
+    // Get the combined size of the current and next block
     size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+    // Overwrite the current block size
     PUT(HDRP(bp), PACK(size, 0));
     PUT(FTRP(bp), PACK(size, 0));
   }
 
+  // Previous is free, but the next is allocated
   else if (!prev_alloc && next_alloc) { /* Case 3 */
+    // Get the combined size of the current and next block
     size += GET_SIZE(HDRP(PREV_BLKP(bp)));
+    // Overwrite the header of the previous block
     PUT(FTRP(bp), PACK(size, 0));
     PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+    // Return the bp of previous blocks original position
     bp = PREV_BLKP(bp);
-  }
+  } 
 
+  // Both are free
   else { /* Case 4 */
+    // Get the full size
     size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
+    // Overwrite the header of the previous block
     PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+    // Overwrite the footer of the next block
     PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
+    // Return the bp of previous blocks original position
     bp = PREV_BLKP(bp);
   }
 
-  /* $begin mmfree */
+  // No change so return the current block
   return bp;
 }
-/* $end mmfree */
 
 /*
  * mm_realloc - Naive implementation of realloc
@@ -214,6 +236,9 @@ void *mm_realloc(void *ptr, size_t size) {
     return mm_malloc(size);
   }
 
+  // Allocate a completely new block of the new size
+  // TODO: Check if we can use the block after the current
+  // TODO: If the new size is smaller, just shrink the current block
   newptr = mm_malloc(size);
 
   /* If realloc() fails the original block is left untouched  */
@@ -223,6 +248,7 @@ void *mm_realloc(void *ptr, size_t size) {
 
   /* Copy the old data. */
   oldsize = GET_SIZE(HDRP(ptr));
+  // Only copy the smallest necessary amount, otherwise we write over the header
   if (size < oldsize)
     oldsize = size;
   memcpy(newptr, ptr, oldsize);
@@ -245,7 +271,6 @@ void mm_checkheap(int verbose) { checkheap(verbose); }
 /*
  * extend_heap - Extend heap with free block and return its block pointer
  */
-/* $begin mmextendheap */
 static void *extend_heap(size_t words) {
   char *bp;
   size_t size;
@@ -256,6 +281,7 @@ static void *extend_heap(size_t words) {
     return NULL;
 
   /* Initialize free block header/footer and the epilogue header */
+  // Overwrites old epilogue header, notice HDRP
   PUT(HDRP(bp), PACK(size, 0));         /* Free block header */
   PUT(FTRP(bp), PACK(size, 0));         /* Free block footer */
   PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* New epilogue header */
@@ -263,54 +289,53 @@ static void *extend_heap(size_t words) {
   /* Coalesce if the previous block was free */
   return coalesce(bp);
 }
-/* $end mmextendheap */
 
 /*
  * place - Place block of asize bytes at start of free block bp
  *         and split if remainder would be at least minimum block size
  */
-/* $begin mmplace */
-/* $begin mmplace-proto */
 static void place(void *bp, size_t asize)
-/* $end mmplace-proto */
 {
+  // Get the size of the block
   size_t csize = GET_SIZE(HDRP(bp));
 
+  // Split if there is space for another block, and its headers after our data
   if ((csize - asize) >= (2 * DSIZE)) {
+    // Create the block for our data and allocate it
     PUT(HDRP(bp), PACK(asize, 1));
     PUT(FTRP(bp), PACK(asize, 1));
+    // Create pointer for the block after
     bp = NEXT_BLKP(bp);
+    // Create new free block
     PUT(HDRP(bp), PACK(csize - asize, 0));
     PUT(FTRP(bp), PACK(csize - asize, 0));
   } else {
+    // Set the block as allocated
     PUT(HDRP(bp), PACK(csize, 1));
     PUT(FTRP(bp), PACK(csize, 1));
   }
 }
-/* $end mmplace */
 
 /*
  * find_fit - Find a fit for a block with asize bytes
  */
-/* $begin mmfirstfit */
-/* $begin mmfirstfit-proto */
 static void *find_fit(size_t asize)
-/* $end mmfirstfit-proto */
 {
-  /* $end mmfirstfit */
-
-  /* $begin mmfirstfit */
   /* First-fit search */
   void *bp;
 
+  // Init bp to the end of the prologue header
+  // Loop if the size of the header is above 0
+  // For each loop set bp to the next block in memory
   for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+    // Check if the block is free
+    // and check if it's size is large enough for our data
     if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
-      return bp;
+      return bp; // Return data address of block, right after the header
     }
   }
-  return NULL; /* No fit */
+  return NULL;
 }
-/* $end mmfirstfit */
 
 static void printblock(void *bp) {
   size_t hsize, halloc, fsize, falloc;
@@ -331,8 +356,10 @@ static void printblock(void *bp) {
 }
 
 static void checkblock(void *bp) {
-  if ((size_t)bp % 8)
+  // The pointer must be doubleword aligned
+  if ((size_t)bp % DSIZE)
     printf("Error: %p is not doubleword aligned\n", bp);
+  // Header and footer location must be correct and contain the same data
   if (GET(HDRP(bp)) != GET(FTRP(bp)))
     printf("Error: header does not match footer\n");
 }
@@ -344,20 +371,34 @@ void checkheap(int verbose) {
   char *bp = heap_listp;
 
   if (verbose)
+    // Print the location of the heap
     printf("Heap (%p):\n", heap_listp);
 
+  // Prologue header must be 2 words, and not allocated.
   if ((GET_SIZE(HDRP(heap_listp)) != DSIZE) || !GET_ALLOC(HDRP(heap_listp)))
     printf("Bad prologue header\n");
+  // Check the prologue header
   checkblock(heap_listp);
 
+  // Init bp to the end of the prologue header
+  // Loop if the size of the header is above 0
+  // For each loop set bp to the next block in memory
+  // Basically: Loop the entire heap and check every block
+  // NOTE: This loop is bad. The epilogue header hasn't been checked yet and could be incorrect
+  // NOTE: If something has it's size set to 0 the loop would also end, not actually checking the entire heap.
+  // TODO: One could store the heap info in the prologue header to check the correctness of the prologue and epilogue headers
   for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
     if (verbose)
       printblock(bp);
+    // Check every single block
     checkblock(bp);
   }
 
   if (verbose)
     printblock(bp);
+  // Size of epilogue must be 0
+  // Epilogue must not allocated
+  // NOTE: See note at loop, this could cause issues
   if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
     printf("Bad epilogue header\n");
 }

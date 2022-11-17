@@ -1,6 +1,6 @@
 /*
  * memlib.c - a module that simulates the memory system.  Needed because it 
- *            allows us to interleave calls from the student's malloc package 
+ *            allows us to interleave calls from the student's malloc package meml
  *            with the system's malloc package in libc.
  */
 #include <stdio.h>
@@ -60,9 +60,9 @@ void *mem_sbrk(int incr)
     char *old_brk = mem_brk;
 
     if ( (incr < 0) || ((mem_brk + incr) > mem_max_addr)) {
-	errno = ENOMEM;
-	fprintf(stderr, "ERROR: mem_sbrk failed. Ran out of memory...\n");
-	return (void *)-1;
+      errno = ENOMEM;
+      fprintf(stderr, "ERROR: mem_sbrk failed. Ran out of memory...\n");
+      return (void *)-1;
     }
     mem_brk += incr;
     return (void *)old_brk;

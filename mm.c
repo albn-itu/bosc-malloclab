@@ -224,15 +224,13 @@ void *mm_realloc(void *ptr, size_t size) {
   next_size = GET_SIZE(HDRP(NEXT_BLKP(ptr)));
 
   if (asize == size) {
-    printf("this1\n");
     return ptr;
   } else if (asize < oldsize) {
     // Smaller than current, cannot be shrunk
     // Smaller than current, can be shrunk and split
-    printf("this2 %p, %p, %p\n", ptr, HDRP(ptr), FTRP(ptr));
     return ptr;
-  } else if (!next_alloc && ((next_size + oldsize) - DSIZE) >= asize) {
-    printf("this3\n");
+  } else if (!next_alloc && ((next_size + oldsize) - 2 * DSIZE) >= asize) {
+    // TODO: Why is 2*dsize necessary above? Check for possible cases where that impacts utility
     // Larger than current, next is last of heap, large enough, just not to split
     // Larger than current, next is last of heap, large enough, with split
     // Larger than current, next is free and large enough, just not to split
@@ -242,7 +240,12 @@ void *mm_realloc(void *ptr, size_t size) {
     place_realloc(ptr, (next_size + oldsize), asize);
     return ptr;
   } else {
-    printf("this4\n");
+    // TODO: Check that this actually uses the last block in case of expanding
+    // Larger than current, next is not free, heap is small
+    // Larger than current, next is not free, heap is large
+    // Larger than current, next is free, but too small
+    // Larger than current, next is last of heap, but too small
+    // Larger than current, right next to end of heap
     newptr = mm_malloc(asize);
     memcpy(newptr, ptr, oldsize);
 
@@ -250,12 +253,6 @@ void *mm_realloc(void *ptr, size_t size) {
 
     return newptr;
   }
-
-  // TODO: Larger than current, next is not free, heap is small
-  // TODO: Larger than current, next is not free, heap is large
-  // TODO: Larger than current, next is free, but too small
-  // TODO: Larger than current, next is last of heap, but too small
-  // TODO: Larger than current, right next to end of heap
 
   return ptr;
 }

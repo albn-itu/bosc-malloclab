@@ -62,11 +62,13 @@ static char *heap_listp = 0; // Pointer to the first block. Set in mm_init
 // Prototypes, so we can call the methods before being defined
 static void *extend_heap(size_t words);
 static void place(void *bp, size_t asize);
+static void place_realloc(void *bp, size_t compsize, size_t asize);
 static void *find_fit(size_t asize);
 static void *coalesce(void *bp);
 static void printblock(void *bp);
 static void checkheap(int verbose);
 static void checkblock(void *bp);
+static size_t get_alligned(size_t size);
 
 /*
  * mm_init - Initialize the memory manager
@@ -103,18 +105,7 @@ void *mm_malloc(size_t size) {
   if (size == 0)
     return NULL;
 
-  // Adjust allocation size to be doubleword alligned
-  if (size <= DSIZE)
-    asize = 2 * DSIZE;
-  else
-    // Abuse integer division to adjust
-    // mm_malloc 10
-    // 8 * ((10 + 8 + (8 - 1)) / 8)
-    // 8 * ((10 + 8 + 7) / 8)
-    // 8 * (25 / 8)
-    // 8 * 4
-    // 32
-    asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
+  asize = get_alligned(size);
 
   // Find a fit for the allocation
   if ((bp = find_fit(asize)) != NULL) {
@@ -211,45 +202,88 @@ static void *coalesce(void *bp) {
   return bp;
 }
 
-/*
- * mm_realloc - Naive implementation of realloc
- */
 void *mm_realloc(void *ptr, size_t size) {
-  size_t oldsize;
   void *newptr;
+  size_t oldsize;
+  size_t asize;
+  size_t next_alloc;
+  size_t next_size;
 
-  // If size == 0 then this is just free, and we return NULL. 
   if (size == 0) {
     mm_free(ptr);
-    return 0;
+    return NULL;
   }
 
-  // If oldptr is NULL, then this is just malloc. 
   if (ptr == NULL) {
     return mm_malloc(size);
   }
 
-  // Allocate a completely new block of the new size
-  // TODO: Check if we can use the block after the current
-  // TODO: If the new size is smaller, just shrink the current block
-  newptr = mm_malloc(size);
+  oldsize = GET_SIZE(HDRP(ptr));
+  asize = get_alligned(size);
+  next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(ptr)));
+  next_size = GET_SIZE(HDRP(NEXT_BLKP(ptr)));
 
-  // If realloc() fails the original block is left untouched  
-  if (!newptr) {
-    return 0;
+  if (asize == size) {
+    printf("this1\n");
+    return ptr;
+  } else if (asize < oldsize) {
+    // Smaller than current, cannot be shrunk
+    // Smaller than current, can be shrunk and split
+    printf("this2 %p, %p, %p\n", ptr, HDRP(ptr), FTRP(ptr));
+    return ptr;
+  } else if (!next_alloc && ((next_size + oldsize) - DSIZE) >= asize) {
+    printf("this3\n");
+    // Larger than current, next is last of heap, large enough, just not to split
+    // Larger than current, next is last of heap, large enough, with split
+    // Larger than current, next is free and large enough, just not to split
+    // Larger than current, next is free and large enough, with split
+
+    // Expand the block
+    place_realloc(ptr, (next_size + oldsize), asize);
+    return ptr;
+  } else {
+    printf("this4\n");
+    newptr = mm_malloc(asize);
+    memcpy(newptr, ptr, oldsize);
+
+    mm_free(ptr);
+
+    return newptr;
   }
 
-  // Copy the old data. 
-  oldsize = GET_SIZE(HDRP(ptr));
-  // Only copy the smallest necessary amount, otherwise we write over the header
-  if (size < oldsize)
-    oldsize = size;
-  memcpy(newptr, ptr, oldsize);
+  // TODO: Larger than current, next is not free, heap is small
+  // TODO: Larger than current, next is not free, heap is large
+  // TODO: Larger than current, next is free, but too small
+  // TODO: Larger than current, next is last of heap, but too small
+  // TODO: Larger than current, right next to end of heap
 
-  // Free the old block. 
-  mm_free(ptr);
+  return ptr;
+}
 
-  return newptr;
+static void place_realloc(void *bp, size_t compsize, size_t asize) {
+  size_t rsize = compsize - asize;
+  char *oldftr = FTRP(bp);
+
+  if (rsize >= (2 * DSIZE)) {
+    // Overwrite the current header
+    PUT(HDRP(bp), PACK(asize, 1));
+    PUT(FTRP(bp), PACK(asize, 1));
+    
+    bp = NEXT_BLKP(bp);
+
+    PUT(HDRP(bp), PACK(rsize, 0));
+    /*if (FTRP(bp) != oldftr) {
+      printf("Something is wrong here. Old: %p, New: %p, size: %d, rsize: %d\n", oldftr, FTRP(bp), asize, rsize);
+    }*/
+
+    // Overwrite the current footer with it's new size
+    PUT(FTRP(bp), PACK(rsize, 0));
+  } else if (asize < compsize) {
+    return;
+  }else {
+    PUT(HDRP(bp), PACK(asize, 1));
+    PUT(FTRP(bp), PACK(asize, 1));
+  }
 }
 
 /*
@@ -390,4 +424,19 @@ void checkheap(int verbose) {
   // NOTE: See note at loop, this could cause issues
   if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
     printf("Bad epilogue header\n");
+}
+
+static size_t get_alligned(size_t size) {
+  // Adjust allocation size to be doubleword alligned
+  if (size <= DSIZE)
+    return 2 * DSIZE;
+  else
+    // Abuse integer division to adjust
+    // mm_malloc 10
+    // 8 * ((10 + 8 + (8 - 1)) / 8)
+    // 8 * ((10 + 8 + 7) / 8)
+    // 8 * (25 / 8)
+    // 8 * 4
+    // 32
+    return DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
 }

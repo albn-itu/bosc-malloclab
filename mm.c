@@ -32,9 +32,6 @@ team_t team = {
 // Get the max of 2 numbers
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
-// Convert void pointer to char
-#define CONV(bp) ((char *)(bp))
-
 // Pack the size and allocated bit into a word. Used for headers and footers
 // Packed together as:
 // 16           2       0
@@ -52,21 +49,24 @@ team_t team = {
 #define GET_ALLOC(p) (GET(p) & 0x1)
 
 // Compute the address of the header, from a pointer to the data location
-#define HDRP(bp) (CONV(bp)-WSIZE)
+#define HDRP(bp) ((char *)(bp)-WSIZE)
 // Compute the address of the footer, from a pointer to the data location
-#define FTRP(bp) (CONV(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
+#define FTRP(bp) ((char *)bp + GET_SIZE(HDRP(bp)) - DSIZE)
 
 // Compute the location of the next block by the data location of a block
-#define NEXT_BLKP(bp) (CONV(bp) + GET_SIZE((CONV(bp)-WSIZE)))
+#define NEXT_BLKP(bp) ((char *)bp + GET_SIZE((char *)(bp)-WSIZE))
 // Compute the location of the previous block by the data location of a block
-#define PREV_BLKP(bp) (CONV(bp) - GET_SIZE((CONV(bp)-DSIZE)))
+#define PREV_BLKP(bp) ((char *)bp - GET_SIZE((char *)(bp)-DSIZE))
 
-// Get the pointer location of the next free block
-// The pointer is given as the start location of the block data, where the pointer is also located
-#define NEXT_FBLKP(bp) (CONV(bp))
-// Get the location of the previous free block
-// I've decided to place this slightly after the next instead of previous
-#define PREV_FBLKP(bp) (CONV(bp)+WSIZE)
+// Get the location of the pointer to the next block
+#define NEXT_FBLKP(bp) ((char *)bp)
+// Get the location of the pointer to the next block
+#define PREV_FBLKP(bp) ((char *)bp+WSIZE)
+
+// Get the pointer to the next free block
+#define NEXT_FBLK(bp) ((void *)GET(NEXT_FBLKP(bp)))
+// Get the pointer to the next free block
+#define PREV_FBLK(bp) ((void *)GET(PREV_FBLKP(bp)))
 
 static char *heap_listp = 0; // Pointer to the first block. Set in mm_init
 static char *first_freep = 0; // Pointer to the first free block
@@ -74,7 +74,6 @@ static char *first_freep = 0; // Pointer to the first free block
 // Prototypes, so we can call the methods before being defined
 static void *extend_heap(size_t words);
 static void place(void *bp, size_t asize);
-static void place_realloc(void *bp, size_t compsize, size_t asize);
 static void *find_fit(size_t asize);
 static void *coalesce(void *bp);
 static void printblock(void *bp);
@@ -82,6 +81,8 @@ static void checkheap(int verbose, char name[]);
 static void checkblock(void *bp);
 static size_t get_alligned(size_t size);
 
+static void set_next_fblkp(void *bp, void *next);
+static void set_prev_fblkp(void *bp, void *next);
 static void insert_in_empty_list(void *bp);
 static void remove_from_empty_list(void *bp);
 
@@ -97,15 +98,14 @@ int mm_init(void) {
   PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1)); // Prologue footer
   PUT(heap_listp + (3 * WSIZE), PACK(0, 1));     // Epilogue header 
   heap_listp += (2 * WSIZE); // Placed on prologue footer
-  first_freep = NULL; // Placed on prologue footer
 
   // Extend the empty heap with a free block of CHUNKSIZE bytes 
-  if (extend_heap(CHUNKSIZE / WSIZE) == NULL)
+  if ((first_freep = extend_heap(CHUNKSIZE / WSIZE)) == NULL)
     return -1;
 
-#ifdef DEBUG
-  checkheap(1, "init");
-#endif
+  set_next_fblkp(first_freep, NULL);
+  set_prev_fblkp(first_freep, NULL);
+
   return 0;
 }
 
@@ -115,7 +115,7 @@ int mm_init(void) {
 void *mm_malloc(size_t size) {
   size_t asize;      // Adjusted block size 
   size_t extendsize; // Amount to extend heap if no fit 
-  char *bp;
+  void *bp;
 
   if (heap_listp == 0) {
     mm_init();
@@ -126,26 +126,16 @@ void *mm_malloc(size_t size) {
     return NULL;
 
   asize = get_alligned(size);
+  if ((bp = find_fit(asize)) == NULL) {
 
-  // Find a fit for the allocation
-  if ((bp = find_fit(asize)) != NULL) {
-    place(bp, asize);
-
-#ifdef DEBUG
-  checkheap(1, "malloc with fit");
-#endif
-    return bp;
+    extendsize = MAX(asize, CHUNKSIZE);
+    if ((bp = extend_heap(extendsize / WSIZE)) == NULL)
+      return NULL;
   }
 
   // No fit found. Get more memory and place the block 
-  extendsize = MAX(asize, CHUNKSIZE);
-  if ((bp = extend_heap(extendsize / WSIZE)) == NULL)
-    return NULL;
   place(bp, asize);
 
-#ifdef DEBUG
-  checkheap(1, "malloc at extension");
-#endif
   return bp;
 }
 
@@ -157,23 +147,17 @@ void mm_free(void *bp) {
   if (bp == 0)
     return;
 
-  // Get the size of the current block
-  // TODO: Will this throw segmentation fault?
-  size_t size = GET_SIZE(HDRP(bp));
-
   // If the heap hasn't been initialized do so and return
-  // NOTE: There are no guarantees the block actually exists within the heap
   if (heap_listp == 0) {
     mm_init();
     return;
   }
 
-  // TODO: If the size line does not throw segmentation fault, then this might write outside of our heap
-
+  // Get the size of the current block
+  size_t size = GET_SIZE(HDRP(bp));
   // Unallocate the block
   PUT(HDRP(bp), PACK(size, 0));
   PUT(FTRP(bp), PACK(size, 0));
-  insert_in_empty_list(bp);
   // Merge with sorrounding blocks
   coalesce(bp);
 }
@@ -191,7 +175,7 @@ static void *coalesce(void *bp) {
 
   // Sandwiched between 2 allocated blocks
   if (prev_alloc && next_alloc) {
-    // No change, so return our current
+    insert_in_empty_list(bp);
     return bp;
   }
   
@@ -233,6 +217,7 @@ static void *coalesce(void *bp) {
     // Return the bp of previous blocks original position
     bp = PREV_BLKP(bp);
   }
+  insert_in_empty_list(bp);
 
   // No change so return the current block
   return bp;
@@ -240,10 +225,7 @@ static void *coalesce(void *bp) {
 
 void *mm_realloc(void *ptr, size_t size) {
   void *newptr;
-  size_t oldsize;
-  size_t asize;
-  size_t next_alloc;
-  size_t next_size;
+  size_t oldsize, asize, next_alloc, next_size;
 
   if (size == 0) {
     mm_free(ptr);
@@ -271,9 +253,10 @@ void *mm_realloc(void *ptr, size_t size) {
     // Larger than current, next is last of heap, large enough, with split
     // Larger than current, next is free and large enough, just not to split
     // Larger than current, next is free and large enough, with split
+    remove_from_empty_list(NEXT_BLKP(ptr));
 
-    // Expand the block
-    place_realloc(ptr, (next_size + oldsize), asize);
+    PUT(HDRP(ptr), PACK(next_size + oldsize, 1));
+    PUT(FTRP(ptr), PACK(next_size + oldsize, 1));
     return ptr;
   } else {
     // TODO: Check that this actually uses the last block in case of expanding
@@ -282,7 +265,10 @@ void *mm_realloc(void *ptr, size_t size) {
     // Larger than current, next is free, but too small
     // Larger than current, next is last of heap, but too small
     // Larger than current, right next to end of heap
-    newptr = mm_malloc(asize);
+    if ((newptr = mm_malloc(asize)) == NULL)
+      return NULL;
+
+    place(newptr, asize);
     memcpy(newptr, ptr, oldsize);
 
     mm_free(ptr);
@@ -293,64 +279,46 @@ void *mm_realloc(void *ptr, size_t size) {
   return ptr;
 }
 
+static void set_next_fblkp(void *bp, void *next) {
+  if (bp == NULL) return;
+
+  PUT(NEXT_FBLKP(bp), next);
+}
+
+static void set_prev_fblkp(void *bp, void *prev) {
+  if (bp == NULL) return;
+
+  PUT(PREV_FBLKP(bp), prev);
+}
+
 /*
  * insert_in_empty_list - Insert free block in the list
  * We go by LIFO, so the inserted block shall have no previous node. Whilst we overwrite the previous of the last root block. Then we set our next to the previous root block and set the root to us.
  */
 static void insert_in_empty_list(void *bp) {
-  if (first_freep != NULL)
-    PUT(PREV_FBLKP(first_freep), bp);
+  set_prev_fblkp(first_freep, bp);
+  set_next_fblkp(bp, first_freep);
+  set_prev_fblkp(bp, NULL);
 
-  PUT(NEXT_FBLKP(bp), first_freep);
-  PUT(PREV_FBLKP(bp), 0);
   first_freep = bp;
 }
 
 static void remove_from_empty_list(void *bp) {
-  char *prevp = GET(PREV_FBLKP(bp));
-  char *nextp = GET(NEXT_FBLKP(bp));
+  void *prevp = PREV_FBLK(bp);
+  void *nextp = NEXT_FBLK(bp);
 
   if (prevp == NULL) {
-    if (nextp != NULL)
-      PUT(PREV_FBLKP(nextp), 0);
+    set_prev_fblkp(nextp, NULL);
     first_freep = nextp;
   } else {
+    set_next_fblkp(prevp, nextp);
+
     if (nextp != NULL)
-      PUT(PREV_FBLKP(nextp), prevp);
-    PUT(NEXT_FBLKP(prevp), nextp); 
+      set_prev_fblkp(nextp, prevp);
   }
 
-  PUT(NEXT_FBLKP(bp), 0);
-  PUT(PREV_FBLKP(bp), 0);
-}
-
-static void place_realloc(void *bp, size_t compsize, size_t asize) {
-  size_t rsize = compsize - asize;
-  char *oldftr = FTRP(bp);
-
-  if (rsize >= (2 * DSIZE)) {
-    // Overwrite the current header
-    PUT(HDRP(bp), PACK(asize, 1));
-    PUT(FTRP(bp), PACK(asize, 1));
-    
-    bp = NEXT_BLKP(bp);
-
-    PUT(HDRP(bp), PACK(rsize, 0));
-    /*if (FTRP(bp) != oldftr) {
-      printf("Something is wrong here. Old: %p, New: %p, size: %d, rsize: %d\n", oldftr, FTRP(bp), asize, rsize);
-    }*/
-
-    // Overwrite the current footer with it's new size
-    PUT(FTRP(bp), PACK(rsize, 0));
-
-    insert_in_empty_list(bp);
-    coalesce(bp);
-  } else if (asize < compsize) {
-    return;
-  }else {
-    PUT(HDRP(bp), PACK(asize, 1));
-    PUT(FTRP(bp), PACK(asize, 1));
-  }
+  set_next_fblkp(bp, 0);
+  set_prev_fblkp(bp, 0);
 }
 
 /*
@@ -361,8 +329,8 @@ static void place(void *bp, size_t asize)
 {
   // Get the size of the block
   size_t csize = GET_SIZE(HDRP(bp));
-  remove_from_empty_list(bp);
 
+  remove_from_empty_list(bp);
   // Split if there is space for another block, and its headers after our data
   if ((csize - asize) >= (2 * DSIZE)) {
     // Create the block for our data and allocate it
@@ -374,7 +342,6 @@ static void place(void *bp, size_t asize)
     PUT(HDRP(bp), PACK(csize - asize, 0));
     PUT(FTRP(bp), PACK(csize - asize, 0));
 
-    insert_in_empty_list(bp);
     coalesce(bp);
   } else {
     // Set the block as allocated
@@ -394,7 +361,7 @@ static void *find_fit(size_t asize)
   while (bp != NULL) {
     if (GET_SIZE(HDRP(bp)) >= asize)
       return bp;
-    bp = GET(NEXT_FBLKP(bp));
+    bp = NEXT_FBLK(bp);
   }
 
   return NULL;
@@ -416,13 +383,12 @@ static void *extend_heap(size_t words) {
   // Overwrites old epilogue header, notice HDRP
   PUT(HDRP(bp), PACK(size, 0));         // Free block header 
   PUT(FTRP(bp), PACK(size, 0));         // Free block footer 
-  insert_in_empty_list(bp);
-
   PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); // New epilogue header 
 
   // Coalesce if the previous block was free 
   return coalesce(bp);
 }
+
 static void printblock(void *bp) {
   size_t hsize, halloc, fsize, falloc, nextfp, prevfp;
 

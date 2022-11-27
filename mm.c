@@ -1,14 +1,17 @@
-// #define DEBUG true
 /*
- * mm-naive.c - The fastest, least memory-efficient malloc package.
+ * Dynamic memory allocator using explicit lists
  *
- * In this naive approach, a block is allocated by simply incrementing
- * the brk pointer.  A block is pure payload. There are no headers or
- * footers.  Blocks are never coalesced or reused. Realloc is
- * implemented directly using mm_malloc and mm_free.
+ * This is adapted from the books implicit list implementation into an explicit list implementation
+ * We create our explicit list by linking free blocks together in the 2 first words of a free block, as so:
+ * |-----------------------|
+ * |hdr |next|prev|data|ftr|
+ * |-----------------------|
+ * The header and footer contain the size and allocation state
+ * The next pointer points to the next block in the linked list, or null if it's the root.
+ * The prev pointer points to the previous block in the linked list, or null if it's the last block of the list.
+ * The method follows the last in first out (LIFO) principle
  *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a high level description of your solution.
+ * Another difference in this implementation is the attempt to uses succeeding blocks in realloc, to improve memory usages.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +21,7 @@
 #include "mm.h"
 
 team_t team = {
-    "the goose",
+    "albn",
     "Albert Rise Nielsen",
     "albn@itu.dk",
     "",

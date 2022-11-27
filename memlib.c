@@ -99,4 +99,3 @@ size_t mem_pagesize()
 {
     return (size_t)getpagesize();
 }
-
